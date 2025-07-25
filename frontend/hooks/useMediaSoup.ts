@@ -28,8 +28,16 @@ export const useMediaSoup = () => {
   const initializeDevice = useCallback(async (routerRtpCapabilities: any) => {
     try {
       console.log('🎛️ Initializing MediaSoup device...');
+      console.log('📋 Router capabilities:', routerRtpCapabilities);
+      
+      // Validate that routerRtpCapabilities is actually an object
+      if (!routerRtpCapabilities || typeof routerRtpCapabilities !== 'object') {
+        throw new Error(`Invalid router capabilities: ${typeof routerRtpCapabilities}`);
+      }
       
       const device = new mediasoupClient.Device();
+      
+      // Pass capabilities directly, not wrapped in an object
       await device.load({ routerRtpCapabilities });
       
       stateRef.current.device = device;

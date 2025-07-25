@@ -102,7 +102,7 @@ const setupRoutes = (app: express.Application, state: ServerState) => {
   app.get('/api/mediasoup/router-capabilities', (req, res) => {
     try {
       const capabilities = state.mediasoupServer.getRouterRtpCapabilities();
-      res.json({ capabilities });
+      res.json({ routerRtpCapabilities: capabilities });
     } catch (error) {
       console.error('❌ Error getting router capabilities:', error);
       res.status(500).json({ 

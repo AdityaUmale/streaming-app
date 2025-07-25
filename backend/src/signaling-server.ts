@@ -198,21 +198,36 @@ export const createSignalingServer = (
     }
   }
 
-  async function handleCreateTransport(clientId: string, data: any): Promise<void> {
-    try {
-      const transportInfo = await state.mediasoupServer.createWebRtcTransport(clientId);
-      sendToClient(clientId, {
-        type: MESSAGE_TYPES.TRANSPORT_CREATED,
-        data: transportInfo
-      });
-    } catch (error) {
-      console.error('❌ Error creating transport:', error);
-      sendToClient(clientId, {
-        type: MESSAGE_TYPES.ERROR,
-        data: { message: 'Failed to create transport' }
-      });
-    }
+  // In your signaling server handleCreateTransport function, add this:
+async function handleCreateTransport(clientId: string, data: any): Promise<void> {
+  try {
+    console.log(`🚛 Backend: Creating transport for client ${clientId}`);
+    console.log(`🚛 Backend: Received data:`, data);
+    console.log(`🚛 Backend: Direction:`, data.direction);
+    
+    const transportInfo = await state.mediasoupServer.createWebRtcTransport(clientId);
+    
+    console.log(`🚛 Backend: Created transport info:`, transportInfo);
+    
+    const responseData = {
+      transportOptions: transportInfo,
+      direction: data.direction
+    };
+    
+    console.log(`🚛 Backend: Sending response:`, responseData);
+    
+    sendToClient(clientId, {
+      type: MESSAGE_TYPES.TRANSPORT_CREATED,
+      data: responseData
+    });
+  } catch (error) {
+    console.error('❌ Error creating transport:', error);
+    sendToClient(clientId, {
+      type: MESSAGE_TYPES.ERROR,
+      data: { message: 'Failed to create transport' }
+    });
   }
+}
 
   async function handleConnectTransport(clientId: string, data: any): Promise<void> {
     try {

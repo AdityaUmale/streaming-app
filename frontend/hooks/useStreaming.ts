@@ -31,16 +31,36 @@ export const useStreaming = (config: StreamingConfig) => {
     const mediaSoup = useMediaSoup();
     const mediaStream = useMediaStream();
 
+
+
+
     // Get router capabilities and initialize device
+    // Replace your initializeMediaSoup function in useStreaming.ts with this debug version:
+
     const initializeMediaSoup = useCallback(async () => {
         try {
             console.log('🚀 Initializing MediaSoup...');
 
+            console.log('📡 Fetching router capabilities from:', `${API_BASE}/mediasoup/router-capabilities`);
             const response = await fetch(`${API_BASE}/mediasoup/router-capabilities`);
-            if (!response.ok) throw new Error('Failed to get router capabilities');
 
-            const { routerRtpCapabilities } = await response.json();
-            await mediaSoup.initializeDevice(routerRtpCapabilities);
+            console.log('📡 Response status:', response.status);
+            console.log('📡 Response ok:', response.ok);
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            console.log('📡 Raw API response:', data);
+            console.log('📡 Router capabilities type:', typeof data.routerRtpCapabilities);
+            console.log('📡 Router capabilities:', data.routerRtpCapabilities);
+
+            if (!data.routerRtpCapabilities) {
+                throw new Error('No routerRtpCapabilities in response');
+            }
+
+            await mediaSoup.initializeDevice(data.routerRtpCapabilities);
 
             console.log('✅ MediaSoup initialized');
         } catch (err) {
@@ -50,20 +70,80 @@ export const useStreaming = (config: StreamingConfig) => {
         }
     }, [mediaSoup]);
 
+    useEffect(() => {
+        if (ws.isConnected && !mediaSoup.isInitialized) {
+            console.log('🔗 WebSocket connected, initializing MediaSoup...');
+            initializeMediaSoup().catch(err => {
+                console.error('❌ Auto-initialization failed:', err);
+                setError('Failed to initialize streaming');
+            });
+        }
+    }, [ws.isConnected, mediaSoup.isInitialized, initializeMediaSoup]);
+
     // Handle transport creation
     const handleCreateTransport = useCallback(async (data: any) => {
         try {
-            const { transportOptions, direction } = data;
+            console.log('🚛 Raw received data:', data);
+            console.log('🚛 Data type:', typeof data);
+            console.log('🚛 Data keys:', Object.keys(data));
+            console.log('🚛 Data.data:', data.data);
+            console.log('🚛 Data.data type:', typeof data.data);
+
+            if (data.data) {
+                console.log('🚛 Data.data keys:', Object.keys(data.data));
+                console.log('🚛 Data.data.transportOptions:', data.data.transportOptions);
+                console.log('🚛 Data.data.direction:', data.data.direction);
+            }
+
+            if (!mediaSoup.isInitialized) {
+                throw new Error('MediaSoup device not initialized');
+            }
+
+            // The actual data might be nested in data.data
+            const messageData = data.data || data;
+            const { transportOptions, direction } = messageData;
+
+            console.log('🔍 Extracted direction:', direction);
+            console.log('🔍 Extracted transportOptions:', transportOptions);
+
+            // Validate transport options
+            if (!transportOptions) {
+                console.error('❌ No transport options found in:', messageData);
+                throw new Error('No transport options provided');
+            }
+
+            if (!transportOptions.id) {
+                console.error('❌ Missing transport id in options:', transportOptions);
+                throw new Error('Transport options missing id');
+            }
+
+            if (!transportOptions.iceParameters) {
+                console.error('❌ Missing iceParameters in options:', transportOptions);
+                throw new Error('Transport options missing iceParameters');
+            }
+
+            if (!transportOptions.iceCandidates) {
+                console.error('❌ Missing iceCandidates in options:', transportOptions);
+                throw new Error('Transport options missing iceCandidates');
+            }
+
+            if (!transportOptions.dtlsParameters) {
+                console.error('❌ Missing dtlsParameters in options:', transportOptions);
+                throw new Error('Transport options missing dtlsParameters');
+            }
 
             if (direction === 'send') {
                 const onConnect = async (dtlsParameters: any) => {
+                    console.log('🔗 Send transport connecting...');
                     ws.send({
                         type: 'connect-transport',
                         transportId: transportOptions.id,
                         dtlsParameters
                     });
                 };
+
                 const onProduce = async (parameters: any): Promise<{ id: string }> => {
+                    console.log('🎥 Producing...');
                     return new Promise((resolve) => {
                         ws.send({
                             type: 'create-producer',
@@ -81,9 +161,12 @@ export const useStreaming = (config: StreamingConfig) => {
                     });
                 };
 
+                console.log('🚛 Creating send transport...');
                 await mediaSoup.createSendTransport(transportOptions, onConnect, onProduce);
+
             } else {
                 const onConnect = async (dtlsParameters: any) => {
+                    console.log('🔗 Recv transport connecting...');
                     ws.send({
                         type: 'connect-transport',
                         transportId: transportOptions.id,
@@ -91,13 +174,20 @@ export const useStreaming = (config: StreamingConfig) => {
                     });
                 };
 
+                console.log('📡 Creating receive transport...');
                 await mediaSoup.createRecvTransport(transportOptions, onConnect);
             }
+
+            console.log(`✅ Successfully created ${direction} transport`);
+
         } catch (err) {
             console.error('❌ Failed to create transport:', err);
+            console.error('❌ Full data structure:', JSON.stringify(data, null, 2));
             setError('Failed to create transport');
         }
     }, [ws, mediaSoup]);
+
+
 
     // Handle new producer (from remote peer)
     const handleNewProducer = useCallback(async (data: any) => {
@@ -158,8 +248,11 @@ export const useStreaming = (config: StreamingConfig) => {
 
             console.log('🎭 Joining as streamer...');
 
-            // Initialize MediaSoup
-            await initializeMediaSoup();
+            // Ensure MediaSoup is initialized (it should be auto-initialized, but double-check)
+            if (!mediaSoup.isInitialized) {
+                console.log('⚠️ MediaSoup not initialized, initializing now...');
+                await initializeMediaSoup();
+            }
 
             // Start media stream
             await mediaStream.startStream({ video: true, audio: true });
@@ -186,8 +279,11 @@ export const useStreaming = (config: StreamingConfig) => {
 
             console.log('👀 Joining as viewer...');
 
-            // Initialize MediaSoup
-            await initializeMediaSoup();
+            // Ensure MediaSoup is initialized
+            if (!mediaSoup.isInitialized) {
+                console.log('⚠️ MediaSoup not initialized, initializing now...');
+                await initializeMediaSoup();
+            }
 
             // Join the session
             ws.send({ type: 'join-as-viewer' });
@@ -240,6 +336,14 @@ export const useStreaming = (config: StreamingConfig) => {
             ws.subscribe('consumer-created', handleCreateConsumer),
             ws.subscribe('joined', (data) => {
                 console.log('🎉 Successfully joined:', data);
+
+                // Only request transports if device is initialized
+                if (!mediaSoup.isInitialized) {
+                    console.error('❌ Cannot create transports: MediaSoup device not initialized');
+                    setError('Device not ready for transport creation');
+                    return;
+                }
+
                 if (config.role === 'streamer') {
                     // Request transports after joining
                     ws.send({ type: 'create-transport', direction: 'send' });
@@ -258,8 +362,7 @@ export const useStreaming = (config: StreamingConfig) => {
         return () => {
             unsubscribes.forEach(unsub => unsub());
         };
-    }, [ws.isConnected, handleCreateTransport, handleNewProducer, handleCreateConsumer, config.role, startProducing]);
-
+    }, [ws.isConnected, handleCreateTransport, handleNewProducer, handleCreateConsumer, config.role, startProducing, mediaSoup.isInitialized]);
     // Update local video element
     useEffect(() => {
         if (localVideoRef.current && mediaStream.stream) {
