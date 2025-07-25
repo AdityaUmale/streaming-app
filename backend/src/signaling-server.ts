@@ -183,12 +183,12 @@ export const createSignalingServer = (
             }
         }
 
-        // CRITICAL FIX: Notify existing streamers about the new client
-        console.log(`📢 Notifying existing streamers about new streamer ${clientId}`);
-        broadcastToStreamers({
-            type: MESSAGE_TYPES.NEW_PRODUCER,
-            data: { streamerId: clientId, peerId: clientId }
-        }, clientId);
+        // // CRITICAL FIX: Notify existing streamers about the new client
+        // console.log(`📢 Notifying existing streamers about new streamer ${clientId}`);
+        // broadcastToStreamers({
+        //     type: MESSAGE_TYPES.NEW_PRODUCER,
+        //     data: { streamerId: clientId, peerId: clientId }
+        // }, clientId);
 
         // CRITICAL FIX: Notify the new streamer about existing producers
         console.log(`📢 Notifying ${clientId} about ${state.producers.size} existing producers`);
@@ -270,24 +270,26 @@ export const createSignalingServer = (
     }
 
     // FIXED: Handle message structure properly for transport creation
-    function handleMessage(clientId: string, message: WebSocketMessage): void {
-        const handler = messageHandlers[message.type as keyof typeof messageHandlers];
+  function handleMessage(clientId: string, message: WebSocketMessage): void {
+    const handler = messageHandlers[message.type as keyof typeof messageHandlers];
 
-        if (handler) {
-            // SPECIAL CASE: For create-transport, pass the entire message (including direction)
-            if (message.type === MESSAGE_TYPES.CREATE_TRANSPORT) {
-                handler(clientId, message); // Pass full message, not just data
-            } else {
-                handler(clientId, message.data || {});
-            }
+    if (handler) {
+        // These message types need the full message structure
+        if ([MESSAGE_TYPES.CREATE_TRANSPORT, 
+             MESSAGE_TYPES.CONNECT_TRANSPORT, 
+             MESSAGE_TYPES.CREATE_PRODUCER].includes(message.type as any)) {
+            handler(clientId, message);
         } else {
-            console.log(`❓ Unknown message type: ${message.type} from ${clientId}`);
-            sendToClient(clientId, {
-                type: MESSAGE_TYPES.ERROR,
-                data: { message: `Unknown message type: ${message.type}` }
-            });
+            handler(clientId, message.data || {});
         }
+    } else {
+        console.log(`❓ Unknown message type: ${message.type} from ${clientId}`);
+        sendToClient(clientId, {
+            type: MESSAGE_TYPES.ERROR,
+            data: { message: `Unknown message type: ${message.type}` }
+        });
     }
+}
 
     async function handleCreateTransport(clientId: string, messageData: any): Promise<void> {
         try {
@@ -321,153 +323,156 @@ export const createSignalingServer = (
             });
         }
     }
-async function handleConnectTransport(clientId: string, data: any): Promise<void> {
-    try {
-        console.log(`🔗 Backend: Connecting transport for client ${clientId}`);
-        console.log(`🔗 Backend: Connect data:`, data);
-        
-        // Add validation for dtlsParameters
-        if (!data.dtlsParameters) {
-            console.error('❌ Missing dtlsParameters in connect transport request');
+    async function handleConnectTransport(clientId: string, message: any): Promise<void> {
+
+        try {
+             const data = message.data || message; // Extract data properly
+            console.log(`🔗 Backend: Connecting transport for client ${clientId}`);
+            console.log(`🔗 Backend: Connect data:`, data);
+
+            // Add validation for dtlsParameters
+            if (!data.dtlsParameters) {
+                console.error('❌ Missing dtlsParameters in connect transport request');
+                sendToClient(clientId, {
+                    type: MESSAGE_TYPES.ERROR,
+                    data: { message: 'Missing dtlsParameters' }
+                });
+                return;
+            }
+
+            console.log(`🔗 Backend: DTLS Parameters:`, data.dtlsParameters);
+
+            await state.mediasoupServer.connectTransport(clientId, data.dtlsParameters);
+            sendToClient(clientId, {
+                type: MESSAGE_TYPES.TRANSPORT_CONNECTED,
+                data: { success: true }
+            });
+        } catch (error) {
+            console.error('❌ Error connecting transport:', error);
             sendToClient(clientId, {
                 type: MESSAGE_TYPES.ERROR,
-                data: { message: 'Missing dtlsParameters' }
+                data: { message: 'Failed to connect transport' }
             });
-            return;
         }
-
-        console.log(`🔗 Backend: DTLS Parameters:`, data.dtlsParameters);
-
-        await state.mediasoupServer.connectTransport(clientId, data.dtlsParameters);
-        sendToClient(clientId, {
-            type: MESSAGE_TYPES.TRANSPORT_CONNECTED,
-            data: { success: true }
-        });
-    } catch (error) {
-        console.error('❌ Error connecting transport:', error);
-        sendToClient(clientId, {
-            type: MESSAGE_TYPES.ERROR,
-            data: { message: 'Failed to connect transport' }
-        });
     }
-}
 
     // FIXED: Enhanced producer creation handler
-    async function handleCreateProducer(clientId: string, data: any): Promise<void> {
-    try {
-        const { rtpParameters, kind, transportId } = data;
-        
-        console.log(`🎬 Backend: Creating producer for client ${clientId}`);
-        console.log(`🎬 Backend: Producer data:`, { kind, transportId, hasRtpParameters: !!rtpParameters });
-        
-        // Add validation
-        if (!kind) {
-            console.error('❌ Missing kind in create producer request');
+    async function handleCreateProducer(clientId: string, message: any): Promise<void> {
+        try {
+            const data = message.data || message; // Extract data properly
+            const { rtpParameters, kind, transportId } = data;
+
+            console.log(`🎬 Backend: Creating producer for client ${clientId}`);
+            console.log(`🎬 Backend: Producer data:`, { kind, transportId, hasRtpParameters: !!rtpParameters });
+
+            // Add validation
+            if (!kind) {
+                console.error('❌ Missing kind in create producer request');
+                sendToClient(clientId, {
+                    type: MESSAGE_TYPES.ERROR,
+                    data: { message: 'Missing producer kind' }
+                });
+                return;
+            }
+
+            if (!rtpParameters) {
+                console.error('❌ Missing rtpParameters in create producer request');
+                sendToClient(clientId, {
+                    type: MESSAGE_TYPES.ERROR,
+                    data: { message: 'Missing rtpParameters' }
+                });
+                return;
+            }
+
+            console.log(`🎬 Creating ${kind} producer for client ${clientId}`);
+
+            const producerId = await state.mediasoupServer.createProducer(clientId, rtpParameters, kind);
+
+            // CRITICAL FIX: Track the producer globally
+            state.producers.set(producerId, {
+                producerId,
+                clientId,
+                kind
+            });
+
+            // CRITICAL FIX: Track producer for this client
+            const client = state.clients.get(clientId);
+            if (client) {
+                client.producers.add(producerId);
+            }
+
+            console.log(`✅ Producer ${producerId} created for client ${clientId}`);
+            console.log(`📊 Total producers: ${state.producers.size}`);
+
+            // Send confirmation to producer
+            sendToClient(clientId, {
+                type: MESSAGE_TYPES.PRODUCER_CREATED,
+                data: { producerId, transportId }
+            });
+
+            // CRITICAL FIX: Notify ALL other clients (both streamers and viewers) about new producer
+            console.log(`📢 Broadcasting new producer ${producerId} to all other clients`);
+            broadcastToOthers({
+                type: MESSAGE_TYPES.NEW_PRODUCER,
+                data: { producerId, kind, peerId: clientId }
+            }, clientId);
+
+        } catch (error) {
+            console.error('❌ Error creating producer:', error);
             sendToClient(clientId, {
                 type: MESSAGE_TYPES.ERROR,
-                data: { message: 'Missing producer kind' }
+                data: { message: 'Failed to create producer' }
             });
-            return;
         }
-
-        if (!rtpParameters) {
-            console.error('❌ Missing rtpParameters in create producer request');
-            sendToClient(clientId, {
-                type: MESSAGE_TYPES.ERROR,
-                data: { message: 'Missing rtpParameters' }
-            });
-            return;
-        }
-
-        console.log(`🎬 Creating ${kind} producer for client ${clientId}`);
-        
-        const producerId = await state.mediasoupServer.createProducer(clientId, rtpParameters, kind);
-        
-        // CRITICAL FIX: Track the producer globally
-        state.producers.set(producerId, {
-            producerId,
-            clientId,
-            kind
-        });
-
-        // CRITICAL FIX: Track producer for this client
-        const client = state.clients.get(clientId);
-        if (client) {
-            client.producers.add(producerId);
-        }
-
-        console.log(`✅ Producer ${producerId} created for client ${clientId}`);
-        console.log(`📊 Total producers: ${state.producers.size}`);
-        
-        // Send confirmation to producer
-        sendToClient(clientId, {
-            type: MESSAGE_TYPES.PRODUCER_CREATED,
-            data: { producerId, transportId }
-        });
-
-        // CRITICAL FIX: Notify ALL other clients (both streamers and viewers) about new producer
-        console.log(`📢 Broadcasting new producer ${producerId} to all other clients`);
-        broadcastToOthers({
-            type: MESSAGE_TYPES.NEW_PRODUCER,
-            data: { producerId, kind, peerId: clientId }
-        }, clientId);
-
-    } catch (error) {
-        console.error('❌ Error creating producer:', error);
-        sendToClient(clientId, {
-            type: MESSAGE_TYPES.ERROR,
-            data: { message: 'Failed to create producer' }
-        });
     }
-}
 
     async function handleCreateConsumer(clientId: string, data: any): Promise<void> {
-    try {
-        const { producerId, rtpCapabilities } = data;
-        console.log(`👀 Creating consumer for client ${clientId}, producer ${producerId}`);
-        
-        // ADD: Verify the producer exists
-        const producerInfo = state.producers.get(producerId);
-        if (!producerInfo) {
-            console.error(`❌ Producer ${producerId} not found in global tracking`);
+        try {
+            const { producerId, rtpCapabilities } = data;
+            console.log(`👀 Creating consumer for client ${clientId}, producer ${producerId}`);
+
+            // ADD: Verify the producer exists
+            const producerInfo = state.producers.get(producerId);
+            if (!producerInfo) {
+                console.error(`❌ Producer ${producerId} not found in global tracking`);
+                sendToClient(clientId, {
+                    type: MESSAGE_TYPES.ERROR,
+                    data: { message: `Producer ${producerId} not found` }
+                });
+                return;
+            }
+
+            console.log(`✅ Found producer info:`, producerInfo);
+
+            const consumerInfo = await state.mediasoupServer.createConsumer(clientId, producerId, rtpCapabilities);
+
+            if (consumerInfo) {
+                const responseData = {
+                    consumerOptions: consumerInfo,
+                    peerId: producerInfo.clientId
+                };
+
+                console.log(`✅ Consumer created for client ${clientId}, sending:`, responseData);
+
+                sendToClient(clientId, {
+                    type: MESSAGE_TYPES.CONSUMER_CREATED,
+                    data: responseData
+                });
+            } else {
+                console.log(`❌ Cannot create consumer for producer ${producerId}`);
+                sendToClient(clientId, {
+                    type: MESSAGE_TYPES.ERROR,
+                    data: { message: 'Cannot consume this producer' }
+                });
+            }
+        } catch (error) {
+            console.error('❌ Error creating consumer:', error);
             sendToClient(clientId, {
                 type: MESSAGE_TYPES.ERROR,
-                data: { message: `Producer ${producerId} not found` }
-            });
-            return;
-        }
-        
-        console.log(`✅ Found producer info:`, producerInfo);
-        
-        const consumerInfo = await state.mediasoupServer.createConsumer(clientId, producerId, rtpCapabilities);
-        
-        if (consumerInfo) {
-            const responseData = {
-                ...consumerInfo,
-                peerId: producerInfo.clientId
-            };
-            
-            console.log(`✅ Consumer created for client ${clientId}, sending:`, responseData);
-            
-            sendToClient(clientId, {
-                type: MESSAGE_TYPES.CONSUMER_CREATED,
-                data: responseData
-            });
-        } else {
-            console.log(`❌ Cannot create consumer for producer ${producerId}`);
-            sendToClient(clientId, {
-                type: MESSAGE_TYPES.ERROR,
-                data: { message: 'Cannot consume this producer' }
+                data: { message: 'Failed to create consumer' }
             });
         }
-    } catch (error) {
-        console.error('❌ Error creating consumer:', error);
-        sendToClient(clientId, {
-            type: MESSAGE_TYPES.ERROR,
-            data: { message: 'Failed to create consumer' }
-        });
     }
-}
 
     async function handleResumeConsumer(clientId: string, data: any): Promise<void> {
         try {
