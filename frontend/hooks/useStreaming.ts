@@ -31,12 +31,7 @@ export const useStreaming = (config: StreamingConfig) => {
     const mediaSoup = useMediaSoup();
     const mediaStream = useMediaStream();
 
-
-
-
     // Get router capabilities and initialize device
-    // Replace your initializeMediaSoup function in useStreaming.ts with this debug version:
-
     const initializeMediaSoup = useCallback(async () => {
         try {
             console.log('🚀 Initializing MediaSoup...');
@@ -131,19 +126,21 @@ export const useStreaming = (config: StreamingConfig) => {
                 console.error('❌ Missing dtlsParameters in options:', transportOptions);
                 throw new Error('Transport options missing dtlsParameters');
             }
-
             if (direction === 'send') {
                 const onConnect = async (dtlsParameters: any) => {
                     console.log('🔗 Send transport connecting...');
+                    console.log('🔗 Transport ID:', transportOptions.id);
+                    console.log('🔗 DTLS Parameters:', dtlsParameters);
                     ws.send({
                         type: 'connect-transport',
-                        transportId: transportOptions.id,
+                        transportId: transportOptions.id, // Ensure transportId is passed
                         dtlsParameters
                     });
                 };
 
                 const onProduce = async (parameters: any): Promise<{ id: string }> => {
                     console.log('🎥 Producing...');
+                    console.log('🎥 Producer parameters:', parameters);
                     return new Promise((resolve) => {
                         ws.send({
                             type: 'create-producer',
@@ -167,9 +164,11 @@ export const useStreaming = (config: StreamingConfig) => {
             } else {
                 const onConnect = async (dtlsParameters: any) => {
                     console.log('🔗 Recv transport connecting...');
+                    console.log('🔗 Transport ID:', transportOptions.id);
+                    console.log('🔗 DTLS Parameters:', dtlsParameters);
                     ws.send({
                         type: 'connect-transport',
-                        transportId: transportOptions.id,
+                        transportId: transportOptions.id, // Ensure transportId is passed
                         dtlsParameters
                     });
                 };
@@ -187,16 +186,43 @@ export const useStreaming = (config: StreamingConfig) => {
         }
     }, [ws, mediaSoup]);
 
-
-
+    // Handle new producer (from remote peer)
+    // Handle new producer (from remote peer)
     // Handle new producer (from remote peer)
     const handleNewProducer = useCallback(async (data: any) => {
         try {
             const { producerId, peerId, kind } = data;
 
-            console.log(`👀 New ${kind} producer from peer ${peerId}`);
+            console.log(`👀 New producer notification:`, data);
+
+            // Validate required fields
+            if (!producerId) {
+                console.warn(`⚠️ Received new producer notification without producerId:`, data);
+                return;
+            }
+
+            if (!peerId) {
+                console.warn(`⚠️ Received new producer notification without peerId:`, data);
+                return;
+            }
+
+            if (!kind) {
+                console.warn(`⚠️ Received new producer notification without kind:`, data);
+                return;
+            }
+
+            console.log(`👀 New ${kind} producer ${producerId} from peer ${peerId}`);
+            console.log(`👀 MediaSoup initialized:`, mediaSoup.isInitialized);
+            console.log(`👀 Device RTP capabilities available:`, !!mediaSoup.getDevice()?.rtpCapabilities);
+
+            // Ensure MediaSoup is initialized and we have device capabilities
+            if (!mediaSoup.isInitialized || !mediaSoup.getDevice()?.rtpCapabilities) {
+                console.warn(`⚠️ Device not ready, cannot consume producer ${producerId}`);
+                return;
+            }
 
             // Request to consume this producer
+            console.log(`📡 Requesting to consume producer ${producerId}`);
             ws.send({
                 type: 'create-consumer',
                 producerId,
@@ -208,6 +234,7 @@ export const useStreaming = (config: StreamingConfig) => {
         }
     }, [ws, mediaSoup]);
 
+    
     // Handle consumer creation
     const handleCreateConsumer = useCallback(async (data: any) => {
         try {
@@ -345,11 +372,29 @@ export const useStreaming = (config: StreamingConfig) => {
                 }
 
                 if (config.role === 'streamer') {
-                    // Request transports after joining
-                    ws.send({ type: 'create-transport', direction: 'send' });
-                    ws.send({ type: 'create-transport', direction: 'recv' });
+                    // CRITICAL FIX: Send direction in the message data
+                    console.log('📤 Requesting send transport...');
+                    ws.send({
+                        type: 'create-transport',
+                        direction: 'send'
+                    });
+
+                    console.log('📥 Requesting receive transport...');
+                    ws.send({
+                        type: 'create-transport',
+                        direction: 'recv'
+                    });
+
+                    // ADD: Start producing after a short delay to ensure transports are ready
+                    setTimeout(() => {
+                        startProducing();
+                    }, 500);
                 } else {
-                    ws.send({ type: 'create-transport', direction: 'recv' });
+                    console.log('📥 Requesting receive transport for viewer...');
+                    ws.send({
+                        type: 'create-transport',
+                        direction: 'recv'
+                    });
                 }
             }),
             ws.subscribe('transports-ready', () => {
@@ -363,6 +408,7 @@ export const useStreaming = (config: StreamingConfig) => {
             unsubscribes.forEach(unsub => unsub());
         };
     }, [ws.isConnected, handleCreateTransport, handleNewProducer, handleCreateConsumer, config.role, startProducing, mediaSoup.isInitialized]);
+
     // Update local video element
     useEffect(() => {
         if (localVideoRef.current && mediaStream.stream) {
